@@ -1,0 +1,6 @@
+README.md
+pyproject.toml
+mridangam_transcription.egg-info/PKG-INFO
+mridangam_transcription.egg-info/SOURCES.txt
+mridangam_transcription.egg-info/dependency_links.txt
+mridangam_transcription.egg-info/top_level.txt
