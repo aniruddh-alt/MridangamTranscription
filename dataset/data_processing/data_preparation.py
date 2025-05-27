@@ -1,9 +1,8 @@
 import librosa
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import Tuple, Optional
 from pathlib import Path
 import matplotlib.pyplot as plt
-import scipy.signal
 
 def get_audio(path: Path) -> Tuple[np.array, float]:
     """
