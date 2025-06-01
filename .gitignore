@@ -17,3 +17,4 @@ __pycache__/
 *.json
 # Ignore output files
 output/
+*.zip
