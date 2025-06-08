@@ -217,24 +217,53 @@ class MridangamDataset(Dataset):
         self.mel_stats = mel_stats
         self.architecture = architecture
         self.augment = augment
+        self.num_augmentations = 3
+        self.dataset_size = len(file_paths) * (self.num_augmentations + 1) if augment else len(file_paths)
+        
+        # Mapping for augmentation types
+        self.augmentation_map = {
+            0: "original",
+            1: "pitch_shift",     # Pitch shifting
+            2: "time_stretch",    # Time stretching
+            3: "noise_injection"  # Noise injection
+        }
         
         # Encode labels
         self.label_encoder = LabelEncoder()
         self.encoded_labels = self.label_encoder.fit_transform(labels)
         
+        if augment:
+            print(f"Created dataset with {self.dataset_size} samples "
+                  f"({len(file_paths)} original + {len(file_paths) * self.num_augmentations} augmented)")
+        
     def __len__(self):
-        return len(self.file_paths)
+        return self.dataset_size
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Load and process audio on-the-fly.
         """
-        file_path = self.file_paths[idx]
-        label = self.encoded_labels[idx]
+        base_size = len(self.file_paths)
+        
+        # Determine if this is an original or augmented sample
+        if idx < base_size:
+            file_idx = idx
+            aug_type = 0  # Original (no augmentation)
+        else:
+            # Calculate which original sample and which augmentation type
+            file_idx = (idx - base_size) % base_size
+            aug_type = ((idx - base_size) // base_size) + 1
+        
+        file_path = self.file_paths[file_idx]
+        label = self.encoded_labels[file_idx]
         
         try:
             # Load audio
             audio, sr = get_audio(file_path)
+            
+            # Apply audio-level augmentation if this is an augmented sample
+            if aug_type > 0:
+                audio = self._apply_audio_augmentation(audio, sr, aug_type)
             
             # Get onset and window
             onset = get_onset(audio, sr)
@@ -243,8 +272,11 @@ class MridangamDataset(Dataset):
             # Get mel spectrogram
             mel_spec = get_mel_spectrogram(audio_window, sr)
             
-            # Apply augmentation if requested
-            if self.augment:
+            # Apply spectrogram-level augmentation if this is an augmented sample
+            if aug_type > 0:
+                mel_spec = self._apply_spec_augmentation(mel_spec, aug_type)
+            # Apply standard augmentation if requested (for original samples)
+            elif self.augment and aug_type == 0:
                 mel_spec = self._apply_augmentation(mel_spec)
             
             # Normalize and format for architecture
@@ -253,7 +285,7 @@ class MridangamDataset(Dataset):
             return mel_spec, torch.LongTensor([label])[0]
             
         except Exception as e:
-            print(f"Error processing {file_path}: {e}")
+            print(f"Error processing {file_path} (aug_type={self.augmentation_map[aug_type]}): {e}")
             # Return zero tensor with correct shape
             if self.architecture in ['cnn', 'cnn_rnn', 'cnn_lstm']:
                 return torch.zeros(1, 128, self.target_length), torch.LongTensor([0])[0]
@@ -261,6 +293,67 @@ class MridangamDataset(Dataset):
                 return torch.zeros(128, self.target_length), torch.LongTensor([0])[0]
             else:  # rnn, lstm
                 return torch.zeros(self.target_length, 128), torch.LongTensor([0])[0]
+    
+    def _apply_audio_augmentation(self, audio: np.ndarray, sr: float, aug_type: int) -> np.ndarray:
+        """
+        Apply audio-level augmentation based on augmentation type.
+        """
+        aug_type_name = self.augmentation_map.get(aug_type, "pitch_shift")
+        
+        if aug_type_name == "pitch_shift":
+            # Shift pitch up or down by 0.5-2 semitones
+            n_steps = np.random.uniform(-2, 2)
+            return librosa.effects.pitch_shift(audio, sr=sr, n_steps=n_steps)
+            
+        elif aug_type_name == "time_stretch":
+            # Stretch time by factor of 0.9-1.1
+            rate = np.random.uniform(0.9, 1.1)
+            audio = librosa.effects.time_stretch(audio, rate=rate)
+            # Ensure length matches original
+            if len(audio) < len(audio):
+                audio = np.pad(audio, (0, len(audio) - len(audio)), mode='constant')
+            else:
+                audio = audio[:len(audio)]
+            return audio
+            
+        elif aug_type_name == "noise_injection":
+            # Add background noise at varying SNR
+            noise_factor = np.random.uniform(0.005, 0.02)
+            noise = np.random.normal(0, noise_factor, audio.shape)
+            return audio + noise
+        
+        return audio
+    
+    def _apply_spec_augmentation(self, mel_spec: np.ndarray, aug_type: int) -> np.ndarray:
+        """
+        Apply spectrogram-level augmentation based on augmentation type.
+        """
+        mel_spec = mel_spec.copy()
+        n_mels, time_frames = mel_spec.shape
+        
+        aug_type_name = self.augmentation_map.get(aug_type, "pitch_shift")
+        
+        if aug_type_name == "pitch_shift":
+            # For pitch-shifted audio, apply freq masking
+            f_mask_param = min(20, n_mels // 3)
+            f_start = np.random.randint(0, max(1, n_mels - f_mask_param))
+            f_width = np.random.randint(10, f_mask_param)
+            mel_spec[f_start:f_start + f_width, :] = mel_spec.min()
+            
+        elif aug_type_name == "time_stretch":
+            # For time-stretched audio, apply time masking
+            t_mask_param = min(30, time_frames // 3)
+            t_start = np.random.randint(0, max(1, time_frames - t_mask_param))
+            t_width = np.random.randint(10, t_mask_param)
+            mel_spec[:, t_start:t_start + t_width] = mel_spec.min()
+            
+        elif aug_type_name == "noise_injection":
+            # For noise-injected audio, apply random noise to spectrogram
+            noise_factor = np.random.uniform(0.01, 0.03)
+            noise = np.random.normal(0, noise_factor, mel_spec.shape)
+            mel_spec += noise
+        
+        return mel_spec
     
     def _normalize_and_format(self, mel_spec: np.ndarray) -> torch.Tensor:
         """
@@ -438,6 +531,8 @@ def create_file_based_dataset(directory: Path,
     
     # Compute mel statistics from training set
     mel_stats = None
+    if compute_stats:
+        mel_stats = compute_mel_statistics(files_train, sample_ratio=0.1)
     
     # Create datasets
     train_dataset = MridangamDataset(
