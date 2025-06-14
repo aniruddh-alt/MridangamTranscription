@@ -1,4 +1,3 @@
-
 # Mridangam Transcription Model on Kaggle
 # This notebook runs the mridangam transcription model
 
@@ -17,6 +16,9 @@ import numpy as np
 from typing import Tuple, Optional
 from pathlib import Path
 import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix
+import pandas as pd
 
 def get_audio(path: Path) -> Tuple[np.array, float]:
     """
@@ -128,11 +130,16 @@ def get_mel_spectrogram(audio: np.array, sr: float) -> np.array:
     Returns:
         Mel spectrogram
     """
-    n_fft = 512                  # or some value ≤ your shortest clip length
-    hop_length = 256             # or half of n_fft
+    # Dynamic n_fft sizing based on audio length
+    max_n_fft = min(512, len(audio))  # Use smaller of 512 or audio length
+    n_fft = max(256, max_n_fft)  # Ensure minimum of 256
+    hop_length = n_fft // 2  # Half of n_fft
+    
+    # Ensure audio is long enough for n_fft
     if len(audio) < n_fft:
         pad_amt = n_fft - len(audio)
         audio = np.pad(audio, (0, pad_amt), mode='constant')
+    
     mel_spectrogram = librosa.feature.melspectrogram(
         y=audio,
         sr=sr,
@@ -300,27 +307,39 @@ class MridangamDataset(Dataset):
         """
         aug_type_name = self.augmentation_map.get(aug_type, "pitch_shift")
         
-        if aug_type_name == "pitch_shift":
-            # Shift pitch up or down by 0.5-2 semitones
-            n_steps = np.random.uniform(-2, 2)
-            return librosa.effects.pitch_shift(audio, sr=sr, n_steps=n_steps)
-            
-        elif aug_type_name == "time_stretch":
-            # Stretch time by factor of 0.9-1.1
-            rate = np.random.uniform(0.9, 1.1)
-            audio = librosa.effects.time_stretch(audio, rate=rate)
-            # Ensure length matches original
-            if len(audio) < len(audio):
-                audio = np.pad(audio, (0, len(audio) - len(audio)), mode='constant')
-            else:
-                audio = audio[:len(audio)]
-            return audio
-            
-        elif aug_type_name == "noise_injection":
-            # Add background noise at varying SNR
-            noise_factor = np.random.uniform(0.005, 0.02)
-            noise = np.random.normal(0, noise_factor, audio.shape)
-            return audio + noise
+        try:
+            if aug_type_name == "pitch_shift":
+                # Shift pitch up or down by 0.5-2 semitones
+                n_steps = np.random.uniform(-2, 2)
+                return librosa.effects.pitch_shift(audio, sr=sr, n_steps=n_steps)
+                
+            elif aug_type_name == "time_stretch":
+                # Stretch time by factor of 0.9-1.1
+                rate = np.random.uniform(0.9, 1.1)
+                try:
+                    stretched_audio = librosa.effects.time_stretch(audio, rate=rate)
+                    # Ensure length consistency
+                    original_length = len(audio)
+                    if len(stretched_audio) < original_length:
+                        # Pad if shorter
+                        stretched_audio = np.pad(stretched_audio, (0, original_length - len(stretched_audio)), mode='constant')
+                    elif len(stretched_audio) > original_length:
+                        # Truncate if longer
+                        stretched_audio = stretched_audio[:original_length]
+                    return stretched_audio
+                except Exception as e:
+                    # If time stretch fails, return original audio
+                    return audio
+                
+            elif aug_type_name == "noise_injection":
+                # Add background noise at varying SNR
+                noise_factor = np.random.uniform(0.005, 0.02)
+                noise = np.random.normal(0, noise_factor, audio.shape)
+                return audio + noise
+        
+        except Exception as e:
+            # If any augmentation fails, return original audio
+            pass
         
         return audio
     
@@ -336,16 +355,22 @@ class MridangamDataset(Dataset):
         if aug_type_name == "pitch_shift":
             # For pitch-shifted audio, apply freq masking
             f_mask_param = min(20, n_mels // 3)
-            f_start = np.random.randint(0, max(1, n_mels - f_mask_param))
-            f_width = np.random.randint(10, f_mask_param)
-            mel_spec[f_start:f_start + f_width, :] = mel_spec.min()
+            if f_mask_param > 0 and n_mels > f_mask_param:
+                f_start = np.random.randint(0, n_mels - f_mask_param)
+                f_width = np.random.randint(1, f_mask_param + 1)
+                f_end = min(f_start + f_width, n_mels)
+                mel_spec[f_start:f_end, :] = mel_spec.min()
             
         elif aug_type_name == "time_stretch":
-            # For time-stretched audio, apply time masking
-            t_mask_param = min(30, time_frames // 3)
-            t_start = np.random.randint(0, max(1, time_frames - t_mask_param))
-            t_width = np.random.randint(10, t_mask_param)
-            mel_spec[:, t_start:t_start + t_width] = mel_spec.min()
+            try:
+                t_mask_param = min(30, time_frames // 3)
+                if t_mask_param > 0 and time_frames > t_mask_param:
+                    t_start = np.random.randint(0, time_frames - t_mask_param)
+                    t_width = np.random.randint(1, t_mask_param + 1)
+                    t_end = min(t_start + t_width, time_frames)
+                    mel_spec[:, t_start:t_end] = mel_spec.min()
+            except Exception as e:
+                return mel_spec  # If time stretch fails, return original spectrogram
             
         elif aug_type_name == "noise_injection":
             # For noise-injected audio, apply random noise to spectrogram
@@ -654,44 +679,40 @@ class MridangamCNN(nn.Module):
 
             # input shape: (1, 128, 128)
             nn.Conv2d(in_channels=1, out_channels=32, kernel_size=(3, 3), padding=1, stride=1),
-            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 3), padding=1, stride=1),
             # output shape: (32, 128, 128)
 
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
             nn.MaxPool2d(kernel_size=(2, 2), stride=2, padding=0),
+            nn.Dropout(p=0.3),
             # output shape: (32, 64, 64)
 
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=(3, 3), padding=1, stride=1),
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=(3, 3), padding=1, stride=1),
             # output shape: (64, 64, 64)
 
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
             nn.MaxPool2d(kernel_size=(2, 2), stride=2, padding=0),
+            nn.Dropout(p=0.3),
             # output shape: (64, 32, 32)
 
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=(3, 3), padding=1, stride=1),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1, stride=1),
-            # output shape: (128, 32, 32)
+            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=(3, 3), padding=1, stride=1),
+            # output shape: (64, 32, 32)
 
-            nn.BatchNorm2d(128),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
             nn.MaxPool2d(kernel_size=(2, 2), stride=2, padding=0),
-            # output shape: (128, 16, 16)
-
-            nn.AdaptiveAvgPool2d((1, None)) # output shape: (128, 1, 16)
+            nn.Dropout(p=0.4),
+            # output shape: (64, 16, 16)
+            nn.AdaptiveAvgPool2d((1, None)),  # Then reduce spatial
 
         )
 
         self.classifier = nn.Sequential(
-            nn.Conv1d(in_channels=128, out_channels=64, kernel_size=3, padding=1),  # output shape: (64, 1, 16)
+            nn.Conv1d(in_channels=64, out_channels=64, kernel_size=3, padding=1),  # output shape: (64, 1, 16)
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.5),
             nn.AdaptiveAvgPool1d(1),  # output shape: (64, 1, 1)
+            nn.Dropout(p=0.4),
             nn.Flatten(),  # output shape: (64)
             nn.Linear(64, num_classes),  # output shape: (num_classes)
         )
@@ -901,3 +922,429 @@ def run_training():
 # Run the training
 if __name__ == "__main__":
     model, training_history = run_training()
+
+def plot_training_history(history):
+    """
+    Plot the training history including loss and accuracy.
+    """
+    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Training History', fontsize=16)
+    
+    # Plot training loss
+    axs[0, 0].plot(history['train_losses'], label='Train Loss')
+    axs[0, 0].plot(history['val_losses'], label='Val Loss')
+    axs[0, 0].set_title('Loss')
+    axs[0, 0].set_xlabel('Epoch')
+    axs[0, 0].set_ylabel('Loss')
+    axs[0, 0].legend()
+    
+    # Plot training accuracy
+    axs[0, 1].plot(history['train_accuracies'], label='Train Accuracy')
+    axs[0, 1].plot(history['val_accuracies'], label='Val Accuracy')
+    axs[0, 1].set_title('Accuracy')
+    axs[0, 1].set_xlabel('Epoch')
+    axs[0, 1].set_ylabel('Accuracy (%)')
+    axs[0, 1].legend()
+    
+    # Confusion matrix
+    axs[1, 0].set_title('Confusion Matrix')
+    cm = confusion_matrix(training_data['test']['label'], test_preds)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='coolwarm', ax=axs[1, 0])
+    axs[1, 0].set_xlabel('Actual')
+    axs[1, 0].set_ylabel('Predicted')
+    
+    # Classification report
+    report = classification_report(training_data['test']['label'], test_preds, output_dict=True)
+    report_df = pd.DataFrame(report).transpose()
+    axs[1, 1].set_title('Classification Report')
+    sns.heatmap(report_df.iloc[:-1, :].T, annot=True, cmap='viridis', ax=axs[1, 1])
+    axs[1, 1].set_xlabel('Metrics')
+    axs[1, 1].set_ylabel('Classes')
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
+
+# Example of using the plotting function
+# Assuming `history` is the output from `train_and_validate` function
+plot_training_history(training_history)
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_recall_fscore_support
+import pandas as pd
+import numpy as np
+from collections import Counter
+
+def evaluate_model_comprehensive(model, test_loader, criterion, device, label_encoder, save_plots=True):
+    """
+    Comprehensive model evaluation with detailed metrics and visualizations
+    """
+    model.eval()
+    
+    all_predictions = []
+    all_labels = []
+    all_probabilities = []
+    losses = []
+    
+    print("Running comprehensive evaluation...")
+    
+    with torch.no_grad():
+        for inputs, labels in tqdm(test_loader, desc="Evaluating"):
+            inputs = inputs.to(device)
+            labels = labels.to(device).long()
+            
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            losses.append(loss.item())
+            
+            # Get probabilities and predictions
+            probabilities = torch.softmax(outputs, dim=1)
+            predictions = outputs.argmax(dim=1)
+            
+            # Store results
+            all_predictions.extend(predictions.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_probabilities.extend(probabilities.cpu().numpy())
+    
+    # Convert to numpy arrays
+    all_predictions = np.array(all_predictions)
+    all_labels = np.array(all_labels)
+    all_probabilities = np.array(all_probabilities)
+    
+    # Calculate metrics
+    accuracy = accuracy_score(all_labels, all_predictions)
+    avg_loss = np.mean(losses)
+    
+    # Get class names
+    class_names = label_encoder.classes_
+    
+    # Print basic metrics
+    print(f"\n{'='*60}")
+    print("COMPREHENSIVE EVALUATION RESULTS")
+    print(f"{'='*60}")
+    print(f"Overall Accuracy: {accuracy*100:.2f}%")
+    print(f"Average Loss: {avg_loss:.4f}")
+    print(f"Total Test Samples: {len(all_labels)}")
+    
+    # Detailed classification report
+    print(f"\n{'='*40}")
+    print("CLASSIFICATION REPORT")
+    print(f"{'='*40}")
+    report = classification_report(
+        all_labels, all_predictions, 
+        target_names=class_names,
+        output_dict=True
+    )
+    
+    # Print formatted classification report
+    print(classification_report(all_labels, all_predictions, target_names=class_names))
+    
+    # Per-class analysis
+    print(f"\n{'='*40}")
+    print("PER-CLASS ANALYSIS")
+    print(f"{'='*40}")
+    
+    for i, class_name in enumerate(class_names):
+        class_mask = all_labels == i
+        if np.sum(class_mask) > 0:
+            class_accuracy = accuracy_score(all_labels[class_mask], all_predictions[class_mask])
+            class_count = np.sum(class_mask)
+            predicted_as_this_class = np.sum(all_predictions == i)
+            
+            print(f"{class_name:>15}: Accuracy={class_accuracy*100:6.2f}% | "
+                  f"True samples={class_count:3d} | Predicted as this={predicted_as_this_class:3d}")
+    
+    # Confusion matrix analysis
+    cm = confusion_matrix(all_labels, all_predictions)
+    
+    print(f"\n{'='*40}")
+    print("CONFUSION MATRIX ANALYSIS")
+    print(f"{'='*40}")
+    
+    # Find most confused classes
+    np.fill_diagonal(cm, 0)  # Remove diagonal for analysis
+    most_confused = np.unravel_index(np.argmax(cm), cm.shape)
+    print(f"Most confused pair: '{class_names[most_confused[0]]}' → '{class_names[most_confused[1]]}' "
+          f"({cm[most_confused]} times)")
+    
+    # Prediction confidence analysis
+    print(f"\n{'='*40}")
+    print("PREDICTION CONFIDENCE ANALYSIS")
+    print(f"{'='*40}")
+    
+    max_probs = np.max(all_probabilities, axis=1)
+    correct_mask = all_predictions == all_labels
+    
+    print(f"Average confidence (all): {np.mean(max_probs)*100:.2f}%")
+    print(f"Average confidence (correct): {np.mean(max_probs[correct_mask])*100:.2f}%")
+    print(f"Average confidence (incorrect): {np.mean(max_probs[~correct_mask])*100:.2f}%")
+    
+    # Low confidence predictions
+    low_conf_threshold = 0.6
+    low_conf_mask = max_probs < low_conf_threshold
+    print(f"Predictions with confidence < {low_conf_threshold*100:.0f}%: {np.sum(low_conf_mask)} "
+          f"({np.sum(low_conf_mask)/len(all_labels)*100:.1f}%)")
+    
+    if save_plots:
+        plot_evaluation_results(
+            all_labels, all_predictions, all_probabilities, 
+            class_names, report, losses
+        )
+    
+    return {
+        'accuracy': accuracy,
+        'loss': avg_loss,
+        'predictions': all_predictions,
+        'labels': all_labels,
+        'probabilities': all_probabilities,
+        'classification_report': report,
+        'confusion_matrix': confusion_matrix(all_labels, all_predictions),
+        'class_names': class_names
+    }
+
+def plot_evaluation_results(labels, predictions, probabilities, class_names, report, losses):
+    """
+    Create comprehensive evaluation plots
+    """
+    fig = plt.figure(figsize=(20, 15))
+    
+    # 1. Confusion Matrix
+    plt.subplot(3, 4, 1)
+    cm = confusion_matrix(labels, predictions)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=class_names, yticklabels=class_names)
+    plt.title('Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.xticks(rotation=45)
+    plt.yticks(rotation=0)
+    
+    # 2. Normalized Confusion Matrix
+    plt.subplot(3, 4, 2)
+    cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    sns.heatmap(cm_norm, annot=True, fmt='.2f', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names)
+    plt.title('Normalized Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.xticks(rotation=45)
+    plt.yticks(rotation=0)
+    
+    # 3. Per-class metrics
+    plt.subplot(3, 4, 3)
+    metrics_df = pd.DataFrame(report).T
+    metrics_df = metrics_df.drop(['accuracy', 'macro avg', 'weighted avg'])
+    metrics_df[['precision', 'recall', 'f1-score']].plot(kind='bar', ax=plt.gca())
+    plt.title('Per-Class Metrics')
+    plt.xlabel('Classes')
+    plt.ylabel('Score')
+    plt.xticks(rotation=45)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    # 4. Class distribution
+    plt.subplot(3, 4, 4)
+    unique_labels, label_counts = np.unique(labels, return_counts=True)
+    plt.bar(range(len(unique_labels)), label_counts)
+    plt.title('Test Set Class Distribution')
+    plt.xlabel('Classes')
+    plt.ylabel('Count')
+    plt.xticks(range(len(unique_labels)), [class_names[i] for i in unique_labels], rotation=45)
+    
+    # 5. Prediction confidence distribution
+    plt.subplot(3, 4, 5)
+    max_probs = np.max(probabilities, axis=1)
+    correct_mask = predictions == labels
+    
+    plt.hist(max_probs[correct_mask], bins=20, alpha=0.7, label='Correct', color='green')
+    plt.hist(max_probs[~correct_mask], bins=20, alpha=0.7, label='Incorrect', color='red')
+    plt.title('Prediction Confidence Distribution')
+    plt.xlabel('Max Probability')
+    plt.ylabel('Count')
+    plt.legend()
+    
+    # 6. Accuracy by confidence threshold
+    plt.subplot(3, 4, 6)
+    thresholds = np.arange(0.1, 1.0, 0.05)
+    accuracies = []
+    sample_counts = []
+    
+    for threshold in thresholds:
+        high_conf_mask = max_probs >= threshold
+        if np.sum(high_conf_mask) > 0:
+            acc = accuracy_score(labels[high_conf_mask], predictions[high_conf_mask])
+            accuracies.append(acc)
+            sample_counts.append(np.sum(high_conf_mask))
+        else:
+            accuracies.append(0)
+            sample_counts.append(0)
+    
+    plt.plot(thresholds, accuracies, 'b-', label='Accuracy')
+    plt.title('Accuracy vs Confidence Threshold')
+    plt.xlabel('Confidence Threshold')
+    plt.ylabel('Accuracy')
+    plt.grid(True, alpha=0.3)
+    
+    # Add secondary y-axis for sample count
+    ax2 = plt.gca().twinx()
+    ax2.plot(thresholds, sample_counts, 'r--', alpha=0.7, label='Sample Count')
+    ax2.set_ylabel('Sample Count', color='red')
+    
+    # 7. Loss distribution (if available)
+    if losses:
+        plt.subplot(3, 4, 7)
+        plt.plot(losses)
+        plt.title('Loss per Batch')
+        plt.xlabel('Batch')
+        plt.ylabel('Loss')
+        plt.grid(True, alpha=0.3)
+    
+    # 8. Top misclassifications
+    plt.subplot(3, 4, 8)
+    misclass_counts = Counter()
+    for true_label, pred_label in zip(labels, predictions):
+        if true_label != pred_label:
+            pair = (class_names[true_label], class_names[pred_label])
+            misclass_counts[f"{pair[0]}→{pair[1]}"] += 1
+    
+    if misclass_counts:
+        top_misclass = misclass_counts.most_common(5)
+        pairs, counts = zip(*top_misclass)
+        plt.barh(range(len(pairs)), counts)
+        plt.title('Top 5 Misclassifications')
+        plt.xlabel('Count')
+        plt.yticks(range(len(pairs)), pairs)
+        plt.gca().invert_yaxis()
+    
+    # 9-12. Individual class performance heatmaps
+    for i in range(4):
+        if i < len(class_names):
+            plt.subplot(3, 4, 9+i)
+            class_probs = probabilities[:, i]
+            class_true = (labels == i).astype(int)
+            
+            # Create 2D histogram
+            plt.hist2d(class_probs, class_true, bins=20, cmap='Blues')
+            plt.title(f'Class {class_names[i]} Probability Distribution')
+            plt.xlabel('Predicted Probability')
+            plt.ylabel('True Label (0=Other, 1=This Class)')
+            plt.colorbar()
+    
+    plt.tight_layout()
+    plt.savefig('comprehensive_evaluation.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+def analyze_model_errors(model, test_loader, device, label_encoder, num_examples=10):
+    """
+    Analyze model errors in detail with examples
+    """
+    model.eval()
+    
+    errors = []
+    
+    print("Analyzing model errors...")
+    
+    with torch.no_grad():
+        for batch_idx, (inputs, labels) in enumerate(test_loader):
+            inputs = inputs.to(device)
+            labels = labels.to(device).long()
+            
+            outputs = model(inputs)
+            probabilities = torch.softmax(outputs, dim=1)
+            predictions = outputs.argmax(dim=1)
+            
+            # Find errors in this batch
+            for i in range(len(labels)):
+                if predictions[i] != labels[i]:
+                    error_info = {
+                        'batch_idx': batch_idx,
+                        'sample_idx': i,
+                        'true_label': labels[i].item(),
+                        'predicted_label': predictions[i].item(),
+                        'true_class': label_encoder.classes_[labels[i].item()],
+                        'predicted_class': label_encoder.classes_[predictions[i].item()],
+                        'confidence': probabilities[i][predictions[i]].item(),
+                        'true_class_prob': probabilities[i][labels[i]].item(),
+                        'input_tensor': inputs[i].cpu()
+                    }
+                    errors.append(error_info)
+    
+    print(f"\nFound {len(errors)} errors out of {len(test_loader.dataset)} samples")
+    print(f"Error rate: {len(errors)/len(test_loader.dataset)*100:.2f}%")
+    
+    # Sort errors by confidence (most confident errors first)
+    errors.sort(key=lambda x: x['confidence'], reverse=True)
+    
+    print(f"\nTop {min(num_examples, len(errors))} most confident errors:")
+    print("-" * 80)
+    
+    for i, error in enumerate(errors[:num_examples]):
+        print(f"Error {i+1}:")
+        print(f"  True: {error['true_class']} (prob: {error['true_class_prob']:.3f})")
+        print(f"  Predicted: {error['predicted_class']} (confidence: {error['confidence']:.3f})")
+        print()
+    
+    return errors
+
+def save_model_with_metadata(model, label_encoder, mel_stats, architecture, filename='mridangam_model_complete.pth'):
+    """
+    Save model with all necessary metadata for deployment
+    """
+    model_data = {
+        'model_state_dict': model.state_dict(),
+        'label_encoder': label_encoder,
+        'mel_stats': mel_stats,
+        'architecture': architecture,
+        'model_class': model.__class__.__name__,
+        'num_classes': len(label_encoder.classes_),
+        'classes': label_encoder.classes_.tolist(),
+        'input_shape': 'Expected: (batch_size, 1, 128, time_steps) for CNN'
+    }
+    
+    torch.save(model_data, filename)
+    print(f"Complete model saved as '{filename}'")
+    print("This file contains:")
+    print("  - Model weights")
+    print("  - Label encoder")
+    print("  - Mel spectrogram statistics")
+    print("  - Architecture information")
+    print("  - Class information")
+
+# Run the training
+if __name__ == "__main__":
+    model, training_history = run_training()
+    
+    # Add comprehensive evaluation
+    print("\n" + "="*60)
+    print("RUNNING COMPREHENSIVE EVALUATION")
+    print("="*60)
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    criterion = nn.CrossEntropyLoss()
+    
+    # Comprehensive evaluation
+    eval_results = evaluate_model_comprehensive(
+        model=model,
+        test_loader=test_loader,
+        criterion=criterion,
+        device=device,
+        label_encoder=data['label_encoder'],
+        save_plots=True
+    )
+    
+    # Error analysis
+    errors = analyze_model_errors(
+        model=model,
+        test_loader=test_loader,
+        device=device,
+        label_encoder=data['label_encoder'],
+        num_examples=10
+    )
+    
+    # Save complete model
+    save_model_with_metadata(
+        model=model,
+        label_encoder=data['label_encoder'],
+        mel_stats=data['mel_stats'],
+        architecture=data['architecture'],
+        filename='mridangam_model_complete.pth'
+    )

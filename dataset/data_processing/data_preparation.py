@@ -1,3 +1,13 @@
+import torch
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+import numpy as np
+from typing import List, Tuple
+from pathlib import Path
+
+import sys
+
 import librosa
 import numpy as np
 from typing import Tuple, Optional
@@ -28,13 +38,13 @@ def get_onset(audio: np.array, sr: float) -> Optional[float]:
     # Method 1: Spectral flux
     spectral_onsets = librosa.onset.onset_detect(
         y=audio, sr=sr, units='time',
-        onset_envelope=librosa.onset.onset_strength(y=audio, sr=sr),
+        onset_envelope=librosa.onset.onset_strength(y=audio, sr=sr, n_fft=512, hop_length=256),
         pre_max=3, post_max=3, pre_avg=3, post_avg=3,
         delta=0.3, wait=5
     )
     
     # Method 2: Energy-based (fix: compute RMS separately)
-    rms_features = librosa.feature.rms(y=audio)[0]
+    rms_features = librosa.feature.rms(y=audio, frame_length=512, hop_length=256)[0]
     # Convert RMS to onset strength manually
     rms_diff = np.diff(rms_features, prepend=rms_features[0])
     rms_diff = np.maximum(0, rms_diff)  # Only positive changes
@@ -114,7 +124,19 @@ def get_mel_spectrogram(audio: np.array, sr: float) -> np.array:
     Returns:
         Mel spectrogram
     """
-    mel_spectrogram = librosa.feature.melspectrogram(y=audio, sr=sr, n_mels=128, n_fft=2048, hop_length=512)
+    n_fft = 512                  # or some value ≤ your shortest clip length
+    hop_length = 256             # or half of n_fft
+    if len(audio) < n_fft:
+        pad_amt = n_fft - len(audio)
+        audio = np.pad(audio, (0, pad_amt), mode='constant')
+    mel_spectrogram = librosa.feature.melspectrogram(
+        y=audio,
+        sr=sr,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        n_mels=128
+    )
+
     mel_spectrogram_db = librosa.power_to_db(mel_spectrogram, ref=np.max)
     return mel_spectrogram_db
 
@@ -159,15 +181,3 @@ def visualize_onset_detection(audio: np.array, sr: float, onset: float = None):
     
     plt.tight_layout()
     plt.show()
-
-# Test the improved onset detection
-if __name__ == "__main__":
-    # Load audio file
-    audio, sr = get_audio(Path('/Users/aniachin/Projects/mridangam-transcription/dataset/raw_data/mridangam_stroke_1.0/C#/227628__akshaylaya__thom-csh-014.wav'))
-    # Try different methods
-    onset_combined = get_onset(audio, sr)
-    print(f"Combined method onset: {onset_combined:.3f}s")
-    # Use the combined method result
-    audio_window = get_window(onset_combined, audio, sr)
-    # Visualize results
-    visualize_onset_detection(audio, sr, onset_combined)

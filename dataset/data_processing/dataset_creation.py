@@ -16,6 +16,7 @@ from dataset.data_processing.data_preparation import get_window
 from dataset.data_processing.data_preparation import get_onset
 from typing import Optional, Dict, Any
 
+from typing import Optional, Dict, Any
 
 class MridangamDataset(Dataset):
     """
@@ -260,16 +261,28 @@ def create_file_based_dataset(directory: Path,
     print(f"Unique labels: {np.unique(labels)}")
     
     # Split files
-    files_train, files_test, labels_train, labels_test = train_test_split(
+    files_train, files_eval, labels_train, labels_eval = train_test_split(
         file_paths, labels, test_size=test_size, random_state=42, stratify=labels
+    )
+
+    files_val, files_test, labels_val, labels_test = train_test_split(
+        files_eval, labels_eval, test_size=0.5, random_state=42, stratify=labels_eval
     )
     
     # Compute mel statistics from training set
     mel_stats = None
+    if compute_stats:
+        print("Computing mel statistics from training data...")
+        # Using a sample_ratio for potentially faster computation, adjust as needed
+        mel_stats = compute_mel_statistics(files_train, sample_ratio=0.25) 
     
     # Create datasets
     train_dataset = MridangamDataset(
         files_train, labels_train, target_length, mel_stats, architecture, augment=True
+    )
+
+    val_dataset = MridangamDataset(
+        files_val, labels_val, target_length, mel_stats, architecture, augment=False
     )
     
     test_dataset = MridangamDataset(
@@ -277,6 +290,7 @@ def create_file_based_dataset(directory: Path,
     )
     
     print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Validation dataset size: {len(val_dataset)}")
     print(f"Test dataset size: {len(test_dataset)}")
     print(f"Number of classes: {len(train_dataset.label_encoder.classes_)}")
     print(f"Classes: {train_dataset.label_encoder.classes_}")
@@ -284,6 +298,7 @@ def create_file_based_dataset(directory: Path,
     return {
         'train': train_dataset,
         'test': test_dataset,
+        'val': val_dataset,
         'label_encoder': train_dataset.label_encoder,
         'mel_stats': mel_stats,
         'num_classes': len(train_dataset.label_encoder.classes_),
@@ -307,25 +322,3 @@ def create_efficient_dataloader(dataset: MridangamDataset,
         persistent_workers=True if num_workers > 0 else False,
         prefetch_factor=2 if num_workers > 0 else None
     )
-
-if __name__ == "__main__":
-    # Example usage for different architectures
-    print("Creating efficient datasets for different architectures...")
-
-    # CNN Architecture
-    cnn_data = create_file_based_dataset(
-        Path('/Users/aniachin/Projects/mridangam-transcription/dataset/raw_data/mridangam_stroke_1.0'),
-        test_size=0.2,
-        target_length=128,
-        architecture='cnn',
-        compute_stats=True
-    )
-
-    cnn_train_loader = create_efficient_dataloader(cnn_data['train'], batch_size=32, shuffle=True)
-    cnn_test_loader = create_efficient_dataloader(cnn_data['test'], batch_size=32, shuffle=False)
-
-    print("\nCNN Dataset verification:")
-    sample_batch = next(iter(cnn_train_loader))
-    print(f"CNN Input shape: {sample_batch[0].shape}")
-    print("Expected for CNN: (batch_size, 1, n_mels, time_steps)")
-    print(f"Labels shape: {sample_batch[1].shape}")
