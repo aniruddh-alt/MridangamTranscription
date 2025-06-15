@@ -1,0 +1,9 @@
+# Simple Real-Time Mridangam Inference Requirements
+torch>=1.9.0
+librosa>=0.9.0
+pyaudio>=0.2.11
+numpy>=1.21.0
+
+# Optional for better visualization (if needed)
+# matplotlib>=3.5.0
+# seaborn>=0.11.0

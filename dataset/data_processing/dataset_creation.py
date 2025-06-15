@@ -16,7 +16,9 @@ from dataset.data_processing.data_preparation import get_window
 from dataset.data_processing.data_preparation import get_onset
 from typing import Optional, Dict, Any
 
-from typing import Optional, Dict, Any
+import librosa
+
+
 
 class MridangamDataset(Dataset):
     """
@@ -46,24 +48,53 @@ class MridangamDataset(Dataset):
         self.mel_stats = mel_stats
         self.architecture = architecture
         self.augment = augment
+        self.num_augmentations = 3
+        self.dataset_size = len(file_paths) * (self.num_augmentations + 1) if augment else len(file_paths)
+        
+        # Mapping for augmentation types
+        self.augmentation_map = {
+            0: "original",
+            1: "pitch_shift",     # Pitch shifting
+            2: "time_stretch",    # Time stretching
+            3: "noise_injection"  # Noise injection
+        }
         
         # Encode labels
         self.label_encoder = LabelEncoder()
         self.encoded_labels = self.label_encoder.fit_transform(labels)
         
+        if augment:
+            print(f"Created dataset with {self.dataset_size} samples "
+                  f"({len(file_paths)} original + {len(file_paths) * self.num_augmentations} augmented)")
+        
     def __len__(self):
-        return len(self.file_paths)
+        return self.dataset_size
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Load and process audio on-the-fly.
         """
-        file_path = self.file_paths[idx]
-        label = self.encoded_labels[idx]
+        base_size = len(self.file_paths)
+        
+        # Determine if this is an original or augmented sample
+        if idx < base_size:
+            file_idx = idx
+            aug_type = 0  # Original (no augmentation)
+        else:
+            # Calculate which original sample and which augmentation type
+            file_idx = (idx - base_size) % base_size
+            aug_type = ((idx - base_size) // base_size) + 1
+        
+        file_path = self.file_paths[file_idx]
+        label = self.encoded_labels[file_idx]
         
         try:
             # Load audio
             audio, sr = get_audio(file_path)
+            
+            # Apply audio-level augmentation if this is an augmented sample
+            if aug_type > 0:
+                audio = self._apply_audio_augmentation(audio, sr, aug_type)
             
             # Get onset and window
             onset = get_onset(audio, sr)
@@ -72,8 +103,11 @@ class MridangamDataset(Dataset):
             # Get mel spectrogram
             mel_spec = get_mel_spectrogram(audio_window, sr)
             
-            # Apply augmentation if requested
-            if self.augment:
+            # Apply spectrogram-level augmentation if this is an augmented sample
+            if aug_type > 0:
+                mel_spec = self._apply_spec_augmentation(mel_spec, aug_type)
+            # Apply standard augmentation if requested (for original samples)
+            elif self.augment and aug_type == 0:
                 mel_spec = self._apply_augmentation(mel_spec)
             
             # Normalize and format for architecture
@@ -82,7 +116,7 @@ class MridangamDataset(Dataset):
             return mel_spec, torch.LongTensor([label])[0]
             
         except Exception as e:
-            print(f"Error processing {file_path}: {e}")
+            print(f"Error processing {file_path} (aug_type={self.augmentation_map[aug_type]}): {e}")
             # Return zero tensor with correct shape
             if self.architecture in ['cnn', 'cnn_rnn', 'cnn_lstm']:
                 return torch.zeros(1, 128, self.target_length), torch.LongTensor([0])[0]
@@ -90,6 +124,85 @@ class MridangamDataset(Dataset):
                 return torch.zeros(128, self.target_length), torch.LongTensor([0])[0]
             else:  # rnn, lstm
                 return torch.zeros(self.target_length, 128), torch.LongTensor([0])[0]
+    
+    def _apply_audio_augmentation(self, audio: np.ndarray, sr: float, aug_type: int) -> np.ndarray:
+        """
+        Apply audio-level augmentation based on augmentation type.
+        """
+        aug_type_name = self.augmentation_map.get(aug_type, "pitch_shift")
+        
+        try:
+            if aug_type_name == "pitch_shift":
+                # Shift pitch up or down by 0.5-2 semitones
+                n_steps = np.random.uniform(-2, 2)
+                return librosa.effects.pitch_shift(audio, sr=sr, n_steps=n_steps)
+                
+            elif aug_type_name == "time_stretch":
+                # Stretch time by factor of 0.9-1.1
+                rate = np.random.uniform(0.9, 1.1)
+                try:
+                    stretched_audio = librosa.effects.time_stretch(audio, rate=rate)
+                    # Ensure length consistency
+                    original_length = len(audio)
+                    if len(stretched_audio) < original_length:
+                        # Pad if shorter
+                        stretched_audio = np.pad(stretched_audio, (0, original_length - len(stretched_audio)), mode='constant')
+                    elif len(stretched_audio) > original_length:
+                        # Truncate if longer
+                        stretched_audio = stretched_audio[:original_length]
+                    return stretched_audio
+                except Exception as e:
+                    # If time stretch fails, return original audio
+                    return audio
+                
+            elif aug_type_name == "noise_injection":
+                # Add background noise at varying SNR
+                noise_factor = np.random.uniform(0.005, 0.02)
+                noise = np.random.normal(0, noise_factor, audio.shape)
+                return audio + noise
+        
+        except Exception as e:
+            # If any augmentation fails, return original audio
+            pass
+        
+        return audio
+    
+    def _apply_spec_augmentation(self, mel_spec: np.ndarray, aug_type: int) -> np.ndarray:
+        """
+        Apply spectrogram-level augmentation based on augmentation type.
+        """
+        mel_spec = mel_spec.copy()
+        n_mels, time_frames = mel_spec.shape
+        
+        aug_type_name = self.augmentation_map.get(aug_type, "pitch_shift")
+        
+        if aug_type_name == "pitch_shift":
+            # For pitch-shifted audio, apply freq masking
+            f_mask_param = min(20, n_mels // 3)
+            if f_mask_param > 0 and n_mels > f_mask_param:
+                f_start = np.random.randint(0, n_mels - f_mask_param)
+                f_width = np.random.randint(1, f_mask_param + 1)
+                f_end = min(f_start + f_width, n_mels)
+                mel_spec[f_start:f_end, :] = mel_spec.min()
+            
+        elif aug_type_name == "time_stretch":
+            try:
+                t_mask_param = min(30, time_frames // 3)
+                if t_mask_param > 0 and time_frames > t_mask_param:
+                    t_start = np.random.randint(0, time_frames - t_mask_param)
+                    t_width = np.random.randint(1, t_mask_param + 1)
+                    t_end = min(t_start + t_width, time_frames)
+                    mel_spec[:, t_start:t_end] = mel_spec.min()
+            except Exception as e:
+                return mel_spec  # If time stretch fails, return original spectrogram
+            
+        elif aug_type_name == "noise_injection":
+            # For noise-injected audio, apply random noise to spectrogram
+            noise_factor = np.random.uniform(0.01, 0.03)
+            noise = np.random.normal(0, noise_factor, mel_spec.shape)
+            mel_spec += noise
+        
+        return mel_spec
     
     def _normalize_and_format(self, mel_spec: np.ndarray) -> torch.Tensor:
         """
@@ -222,6 +335,7 @@ def compute_mel_statistics(file_paths: List[Path], sample_ratio: float = 0.1) ->
 
 def create_file_based_dataset(directory: Path, 
                              test_size: float = 0.2,
+                             val_size: float = 0.2,
                              target_length: int = 128,
                              architecture: str = 'cnn',
                              compute_stats: bool = True) -> Dict[str, Any]:
@@ -231,6 +345,7 @@ def create_file_based_dataset(directory: Path,
     Args:
         directory: Path to audio files directory
         test_size: Fraction for test split
+        val_size: Fraction for validation split (from remaining data after test split)
         target_length: Fixed sequence length
         architecture: Target architecture
         compute_stats: Whether to compute normalization statistics
@@ -260,27 +375,28 @@ def create_file_based_dataset(directory: Path,
     print(f"Found {len(file_paths)} audio files")
     print(f"Unique labels: {np.unique(labels)}")
     
-    # Split files
-    files_train, files_eval, labels_train, labels_eval = train_test_split(
+    # First split: separate test set
+    files_temp, files_test, labels_temp, labels_test = train_test_split(
         file_paths, labels, test_size=test_size, random_state=42, stratify=labels
     )
-
-    files_val, files_test, labels_val, labels_test = train_test_split(
-        files_eval, labels_eval, test_size=0.5, random_state=42, stratify=labels_eval
+    
+    # Second split: separate train and validation from remaining data
+    # Calculate validation size relative to the remaining data
+    val_size_adjusted = val_size / (1 - test_size)
+    files_train, files_val, labels_train, labels_val = train_test_split(
+        files_temp, labels_temp, test_size=val_size_adjusted, random_state=42, stratify=labels_temp
     )
     
-    # Compute mel statistics from training set
+    # Compute mel statistics from training set only
     mel_stats = None
     if compute_stats:
-        print("Computing mel statistics from training data...")
-        # Using a sample_ratio for potentially faster computation, adjust as needed
-        mel_stats = compute_mel_statistics(files_train, sample_ratio=0.25) 
+        mel_stats = compute_mel_statistics(files_train, sample_ratio=0.1)
     
     # Create datasets
     train_dataset = MridangamDataset(
         files_train, labels_train, target_length, mel_stats, architecture, augment=True
     )
-
+    
     val_dataset = MridangamDataset(
         files_val, labels_val, target_length, mel_stats, architecture, augment=False
     )
@@ -295,10 +411,17 @@ def create_file_based_dataset(directory: Path,
     print(f"Number of classes: {len(train_dataset.label_encoder.classes_)}")
     print(f"Classes: {train_dataset.label_encoder.classes_}")
     
+    # Verify split proportions
+    total_files = len(file_paths)
+    print(f"Split proportions:")
+    print(f"  Train: {len(files_train)/total_files:.1%} ({len(files_train)} files)")
+    print(f"  Validation: {len(files_val)/total_files:.1%} ({len(files_val)} files)")
+    print(f"  Test: {len(files_test)/total_files:.1%} ({len(files_test)} files)")
+    
     return {
         'train': train_dataset,
-        'test': test_dataset,
         'val': val_dataset,
+        'test': test_dataset,
         'label_encoder': train_dataset.label_encoder,
         'mel_stats': mel_stats,
         'num_classes': len(train_dataset.label_encoder.classes_),

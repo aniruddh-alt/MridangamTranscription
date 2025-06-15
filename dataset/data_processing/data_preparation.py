@@ -1,3 +1,6 @@
+# Mridangam Transcription Model on Kaggle
+# This notebook runs the mridangam transcription model
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import LabelEncoder
@@ -38,13 +41,13 @@ def get_onset(audio: np.array, sr: float) -> Optional[float]:
     # Method 1: Spectral flux
     spectral_onsets = librosa.onset.onset_detect(
         y=audio, sr=sr, units='time',
-        onset_envelope=librosa.onset.onset_strength(y=audio, sr=sr, n_fft=512, hop_length=256),
+        onset_envelope=librosa.onset.onset_strength(y=audio, sr=sr),
         pre_max=3, post_max=3, pre_avg=3, post_avg=3,
         delta=0.3, wait=5
     )
     
     # Method 2: Energy-based (fix: compute RMS separately)
-    rms_features = librosa.feature.rms(y=audio, frame_length=512, hop_length=256)[0]
+    rms_features = librosa.feature.rms(y=audio)[0]
     # Convert RMS to onset strength manually
     rms_diff = np.diff(rms_features, prepend=rms_features[0])
     rms_diff = np.maximum(0, rms_diff)  # Only positive changes
@@ -124,11 +127,16 @@ def get_mel_spectrogram(audio: np.array, sr: float) -> np.array:
     Returns:
         Mel spectrogram
     """
-    n_fft = 512                  # or some value ≤ your shortest clip length
-    hop_length = 256             # or half of n_fft
+    # Dynamic n_fft sizing based on audio length
+    max_n_fft = min(512, len(audio))  # Use smaller of 512 or audio length
+    n_fft = max(256, max_n_fft)  # Ensure minimum of 256
+    hop_length = n_fft // 2  # Half of n_fft
+    
+    # Ensure audio is long enough for n_fft
     if len(audio) < n_fft:
         pad_amt = n_fft - len(audio)
         audio = np.pad(audio, (0, pad_amt), mode='constant')
+    
     mel_spectrogram = librosa.feature.melspectrogram(
         y=audio,
         sr=sr,
