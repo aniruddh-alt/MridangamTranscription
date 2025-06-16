@@ -48,7 +48,7 @@ class MridangamDataset(Dataset):
         self.mel_stats = mel_stats
         self.architecture = architecture
         self.augment = augment
-        self.num_augmentations = 3
+        self.num_augmentations = 6
         self.dataset_size = len(file_paths) * (self.num_augmentations + 1) if augment else len(file_paths)
         
         # Mapping for augmentation types
@@ -271,7 +271,22 @@ class MridangamDataset(Dataset):
             noise_factor = 0.01
             noise = np.random.normal(0, noise_factor, mel_spec.shape)
             mel_spec += noise
+
         
+        # Pitch shifting
+        if np.random.random() < 0.3:
+            n_steps = np.random.uniform(-2, 2)
+            mel_spec = librosa.effects.pitch_shift(mel_spec, sr=22050, n_steps=n_steps)
+        
+        # Frequency masking (SpecAugment)
+        if np.random.random() < 0.5:
+            freq_mask_param = 8
+            num_freq_masks = np.random.randint(1, 3)
+            for _ in range(num_freq_masks):
+                f = np.random.uniform(0, freq_mask_param)
+                f0 = np.random.uniform(0, mel_spec.shape[0] - f)
+                mel_spec[int(f0):int(f0 + f), :] = 0
+    
         return mel_spec
 
 def compute_mel_statistics(file_paths: List[Path], sample_ratio: float = 0.1) -> Dict[str, np.ndarray]:

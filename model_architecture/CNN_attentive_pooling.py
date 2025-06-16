@@ -48,52 +48,54 @@ class FrequencyAttentivePooling(nn.Module):
         return x_weighted.sum(dim=-1)  # (batch, channels)    
 
 class MridangamCNN(nn.Module):
-    def __init__(self, n_mels=128, num_classes=10):
+    def __init__(self, n_mels=128, num_classes=10, dropout_rate=0.5):
         super().__init__()
         self.features = nn.Sequential(
             # input shape: (1, 128, 128)
             nn.Conv2d(in_channels=1, out_channels=32, kernel_size=(3, 3), padding=1, stride=1),
-            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 3), padding=1, stride=1),
-            # output shape: (32, 128, 128)
-
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
             nn.MaxPool2d(kernel_size=(2, 2), stride=2, padding=0),
+            nn.Dropout2d(p=dropout_rate * 0.6),  # 0.3 for default dropout_rate=0.5
             # output shape: (32, 64, 64)
 
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=(3, 3), padding=1, stride=1),
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=(3, 3), padding=1, stride=1),
-            # output shape: (64, 64, 64)
-
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
             nn.MaxPool2d(kernel_size=(2, 2), stride=2, padding=0),
+            nn.Dropout2d(p=dropout_rate * 0.6),  # 0.3
             # output shape: (64, 32, 32)
 
             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=(3, 3), padding=1, stride=1),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1, stride=1),
-            # output shape: (128, 32, 32)
-
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
             nn.MaxPool2d(kernel_size=(2, 2), stride=2, padding=0),
+            nn.Dropout2d(p=dropout_rate * 0.8),  # 0.4
             # output shape: (128, 16, 16)
+            
+            # Additional conv layer to reduce spatial dimensions
+            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1, stride=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=(2, 2), stride=2, padding=0),
+            nn.Dropout2d(p=dropout_rate * 0.8),  # 0.4
+            # output shape: (128, 8, 8)
         )
         
         self.attention_pooling = FrequencyAttentivePooling(in_channels=128)
+        
+        # Simpler classifier to reduce overfitting
         self.classifier = nn.Sequential(
-            nn.Dropout(p=0.5),
+            nn.Dropout(p=dropout_rate),  # 0.5
             nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
+            nn.Dropout(p=dropout_rate * 0.6),  # 0.3
             nn.Linear(64, num_classes)
         )
 
     def forward(self, x):
-        x = self.features(x)  # (batch_size, 128, 16, 16)
+        x = self.features(x)  # (batch_size, 128, 8, 8)
         x = self.attention_pooling(x)  # (batch_size, 128)
         x = self.classifier(x)  # (batch_size, num_classes)
         return x
@@ -105,8 +107,9 @@ model = model.to(device)
 
 # Define loss function and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.01,
+                                          steps_per_epoch=100, epochs=100,)
 
 class EarlyStopping:
     def __init__(self, patience=15, min_delta=0.001, restore_best_weights=True, save_path=None):
@@ -357,13 +360,72 @@ def test_model(model, test_loader, criterion, device, model_path=None):
     
     return test_acc, test_loss
 
-def get_model_summary(model, input_shape=(1, 1, 128, 128)):
+def load_model_for_inference(model_path, device, n_mels=128, num_classes=10, dropout_rate=0.5):
+    """
+    Load a trained model for inference with proper error handling
+    
+    Args:
+        model_path (str): Path to the saved model
+        device: torch device
+        n_mels (int): Number of mel-frequency bands
+        num_classes (int): Number of output classes
+        dropout_rate (float): Dropout rate for the model
+        
+    Returns:
+        model: Loaded PyTorch model ready for inference
+    """
+    # Create model instance
+    model = MridangamCNN(n_mels=n_mels, num_classes=num_classes, dropout_rate=dropout_rate)
+    model = model.to(device)
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+    
+    try:
+        # Load the checkpoint
+        checkpoint = torch.load(model_path, map_location=device)
+        
+        # Handle different checkpoint formats
+        if isinstance(checkpoint, dict):
+            if 'model_state_dict' in checkpoint:
+                # Standard checkpoint format
+                model.load_state_dict(checkpoint['model_state_dict'])
+                print(f"Loaded model state dict from checkpoint: {model_path}")
+                if 'epoch' in checkpoint:
+                    print(f"Model was saved at epoch: {checkpoint['epoch']}")
+            elif 'state_dict' in checkpoint:
+                # Alternative format
+                model.load_state_dict(checkpoint['state_dict'])
+                print(f"Loaded model state dict from checkpoint: {model_path}")
+            else:
+                # Direct state dict
+                model.load_state_dict(checkpoint)
+                print(f"Loaded model state dict directly: {model_path}")
+        else:
+            # If checkpoint is not a dict, it might be the model object itself
+            # This shouldn't happen with properly saved models, but handle it
+            raise ValueError(f"Invalid checkpoint format. Expected dict-like object, got {type(checkpoint)}")
+            
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        print(f"Checkpoint type: {type(checkpoint) if 'checkpoint' in locals() else 'Unknown'}")
+        raise
+    
+    # Set to evaluation mode
+    model.eval()
+    
+    return model
+
+def get_model_summary(model, input_shape=(2, 1, 128, 128)):
     """Print model architecture summary"""
     device = next(model.parameters()).device
     x = torch.randn(input_shape).to(device)
     
     print("\nModel Architecture Summary:")
     print("=" * 50)
+    
+    # Set model to eval mode to avoid BatchNorm issues
+    model.eval()
     
     # Test forward pass with intermediate outputs
     with torch.no_grad():
@@ -494,7 +556,7 @@ if __name__ == "__main__":
     # Hyperparameters
     batch_size = 32
     learning_rate = 0.001
-    num_epochs = 50
+    num_epochs = 100
     architecture = 'cnn'
     
     # Data path - use the correct local path
