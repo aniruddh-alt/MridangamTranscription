@@ -220,19 +220,19 @@ def load_model(model_path: str, device: torch.device) -> MridangamCNN:
             if 'model_state_dict' in loaded_data:
                 # Standard checkpoint format
                 model.load_state_dict(loaded_data['model_state_dict'])
-                print(f"✅ Loaded model state dict from checkpoint")
+                print("✅ Loaded model state dict from checkpoint")
             elif 'state_dict' in loaded_data:
                 # Alternative checkpoint format
                 model.load_state_dict(loaded_data['state_dict'])
-                print(f"✅ Loaded model state dict from checkpoint")
+                print("✅ Loaded model state dict from checkpoint")
             else:
                 # Assume the dict is the state dict itself
                 model.load_state_dict(loaded_data)
-                print(f"✅ Loaded model state dict directly")
+                print("✅ Loaded model state dict directly")
         elif hasattr(loaded_data, 'state_dict'):
             # If it's a model object, extract state dict
             model.load_state_dict(loaded_data.state_dict())
-            print(f"✅ Loaded model from saved model object")
+            print("✅ Loaded model from saved model object")
         else:
             # This shouldn't happen, but let's handle it gracefully
             raise ValueError(f"Unexpected saved model format: {type(loaded_data)}")
@@ -275,7 +275,7 @@ class SimpleStrokeDetector:
         # Initialize audio listener
         self.audio_listener = SimpleAudioListener(sample_rate=self.sample_rate)
         
-        print(f"🎵 Stroke detector initialized")
+        print("🎵 Stroke detector initialized")
         print(f"📊 Classes: {', '.join(self.class_names)}")
         
     def predict_stroke(self, audio_segment: np.ndarray) -> Tuple[str, float]:

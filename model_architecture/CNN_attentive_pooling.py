@@ -1,13 +1,10 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import tqdm
 import os
 from datetime import datetime
-from torch.utils.data import DataLoader
 import sys
-import numpy as np
 
 # Add the project root to Python path so we can import our modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -525,7 +522,7 @@ def save_training_summary(history, model_info, save_path):
         f.write(f"Best Epoch: {history['best_epoch'] + 1}\n")
         
         if 'test_acc' in model_info and 'test_loss' in model_info:
-            f.write(f"\nTest Results:\n")
+            f.write("\nTest Results:\n")
             f.write(f"Test Accuracy: {model_info['test_acc']*100:.2f}%\n")
             f.write(f"Test Loss: {model_info['test_loss']:.4f}\n")
     
@@ -581,7 +578,7 @@ if __name__ == "__main__":
             compute_stats=True
         )
         
-        print(f"Dataset created successfully!")
+        print("Dataset created successfully!")
         print(f"Train samples: {len(data['train'])}")
         print(f"Validation samples: {len(data['val'])}")
         print(f"Test samples: {len(data['test'])}")
@@ -617,7 +614,7 @@ if __name__ == "__main__":
         sample_batch = next(iter(train_loader))
         print(f"Input shape: {sample_batch[0].shape}")
         print(f"Labels shape: {sample_batch[1].shape}")
-        print(f"Expected for CNN: (batch_size, 1, n_mels, time_steps)")
+        print("Expected for CNN: (batch_size, 1, n_mels, time_steps)")
         print(f"Label range: {sample_batch[1].min().item()} to {sample_batch[1].max().item()}")
         
         # Verify the model works with sample data
@@ -644,7 +641,7 @@ if __name__ == "__main__":
     os.makedirs(save_dir, exist_ok=True)
     
     print(f"Checkpoints will be saved to: {save_dir}")
-    print(f"Training configuration:")
+    print("Training configuration:")
     print(f"  - Batch size: {batch_size}")
     print(f"  - Learning rate: {learning_rate}")
     print(f"  - Number of epochs: {num_epochs}")
@@ -703,7 +700,7 @@ if __name__ == "__main__":
                 model_path=best_model_path
             )
             
-            print(f"\nFinal Test Results:")
+            print("\nFinal Test Results:")
             print(f"Test Accuracy: {test_acc*100:.2f}%")
             print(f"Test Loss: {test_loss:.4f}")
         else:

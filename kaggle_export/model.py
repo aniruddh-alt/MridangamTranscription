@@ -12,9 +12,7 @@ from pathlib import Path
 import sys
 
 import librosa
-import numpy as np
-from typing import Tuple, Optional
-from pathlib import Path
+from typing import Optional
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix
@@ -95,7 +93,7 @@ def get_window(onset: float, audio: np.array, sr: float,
     # Calculate window boundaries
     # Put onset at 25% of window (to capture pre-attack)
     pre_onset_duration = duration * 0.25
-    post_onset_duration = duration * 0.75
+    duration * 0.75
     
     start_time = max(0, onset - pre_onset_duration)
     end_time = start_time + duration
@@ -327,7 +325,7 @@ class MridangamDataset(Dataset):
                         # Truncate if longer
                         stretched_audio = stretched_audio[:original_length]
                     return stretched_audio
-                except Exception as e:
+                except Exception:
                     # If time stretch fails, return original audio
                     return audio
                 
@@ -337,7 +335,7 @@ class MridangamDataset(Dataset):
                 noise = np.random.normal(0, noise_factor, audio.shape)
                 return audio + noise
         
-        except Exception as e:
+        except Exception:
             # If any augmentation fails, return original audio
             pass
         
@@ -369,7 +367,7 @@ class MridangamDataset(Dataset):
                     t_width = np.random.randint(1, t_mask_param + 1)
                     t_end = min(t_start + t_width, time_frames)
                     mel_spec[:, t_start:t_end] = mel_spec.min()
-            except Exception as e:
+            except Exception:
                 return mel_spec  # If time stretch fails, return original spectrogram
             
         elif aug_type_name == "noise_injection":
@@ -467,7 +465,6 @@ def compute_mel_statistics(file_paths: List[Path], sample_ratio: float = 0.1) ->
     n_sample = max(1, int(len(file_paths) * sample_ratio))
     sampled_paths = np.random.choice(file_paths, n_sample, replace=False)
     
-    all_mel_values = []  # List to collect mel values per frequency bin
     n_mels = 128  # From get_mel_spectrogram function
     
     # Initialize lists for each mel bin
@@ -622,8 +619,6 @@ print(f"CNN Input shape: {sample_batch[0].shape}")
 print("Expected for CNN: (batch_size, 1, n_mels, time_steps)")
 print(f"Labels shape: {sample_batch[1].shape}")
 
-import sys
-import os
 from pathlib import Path
 from tqdm import tqdm
 # Add code directory to path
@@ -639,7 +634,6 @@ data_path = Path('/kaggle/input/mridangam-ml/kaggle_export/data/mridangam_stroke
 # Import and set up your model
 import torch
 import torch.nn as nn
-import torch.optim as optim
 
 # Hyperparameters
 batch_size = 64
@@ -968,10 +962,7 @@ def plot_training_history(history):
 # Assuming `history` is the output from `train_and_validate` function
 plot_training_history(training_history)
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_recall_fscore_support
-import pandas as pd
+from sklearn.metrics import accuracy_score
 import numpy as np
 from collections import Counter
 
@@ -1106,7 +1097,7 @@ def plot_evaluation_results(labels, predictions, probabilities, class_names, rep
     """
     Create comprehensive evaluation plots
     """
-    fig = plt.figure(figsize=(20, 15))
+    plt.figure(figsize=(20, 15))
     
     # 1. Confusion Matrix
     plt.subplot(3, 4, 1)

@@ -1,20 +1,13 @@
 # Mridangam Transcription Model on Kaggle
 # This notebook runs the mridangam transcription model
 
-import torch
-from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
 import numpy as np
-from typing import List, Tuple
+from typing import Tuple
 from pathlib import Path
 
-import sys
 
 import librosa
-import numpy as np
-from typing import Tuple, Optional
-from pathlib import Path
+from typing import Optional
 import matplotlib.pyplot as plt
 
 def get_audio(path: Path) -> Tuple[np.array, float]:
@@ -92,7 +85,7 @@ def get_window(onset: float, audio: np.array, sr: float,
     # Calculate window boundaries
     # Put onset at 25% of window (to capture pre-attack)
     pre_onset_duration = duration * 0.25
-    post_onset_duration = duration * 0.75
+    duration * 0.75
     
     start_time = max(0, onset - pre_onset_duration)
     end_time = start_time + duration

@@ -6,18 +6,15 @@ and the model processes the data as expected.
 """
 
 import sys
-import os
 from pathlib import Path
 import torch
 import matplotlib.pyplot as plt
-import numpy as np
 
 # Add code directory to path
 sys.path.append('/kaggle/input/mridangam-transcription/code')
 
 # Import our modules
-from data_preparation import get_audio, get_mel_spectrogram, get_window, get_onset
-from dataset_creation import MridangamDataset, create_file_based_dataset, create_efficient_dataloader
+from dataset_creation import create_file_based_dataset, create_efficient_dataloader
 from CNN import MridangamCNN as CNNModel
 
 # Print versions for debugging

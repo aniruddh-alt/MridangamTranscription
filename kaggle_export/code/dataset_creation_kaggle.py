@@ -177,7 +177,6 @@ def compute_mel_statistics(file_paths: List[Path], sample_ratio: float = 0.1) ->
     n_sample = max(1, int(len(file_paths) * sample_ratio))
     sampled_paths = np.random.choice(file_paths, n_sample, replace=False)
     
-    all_mel_values = []  # List to collect mel values per frequency bin
     n_mels = 128  # From get_mel_spectrogram function
     
     # Initialize lists for each mel bin

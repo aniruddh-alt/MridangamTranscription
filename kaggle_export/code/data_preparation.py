@@ -79,7 +79,7 @@ def get_window(onset: float, audio: np.array, sr: float,
     # Calculate window boundaries
     # Put onset at 25% of window (to capture pre-attack)
     pre_onset_duration = duration * 0.25
-    post_onset_duration = duration * 0.75
+    duration * 0.75
     
     start_time = max(0, onset - pre_onset_duration)
     end_time = start_time + duration

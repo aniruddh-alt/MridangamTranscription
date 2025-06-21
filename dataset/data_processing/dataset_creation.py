@@ -151,7 +151,7 @@ class MridangamDataset(Dataset):
                         # Truncate if longer
                         stretched_audio = stretched_audio[:original_length]
                     return stretched_audio
-                except Exception as e:
+                except Exception:
                     # If time stretch fails, return original audio
                     return audio
                 
@@ -161,7 +161,7 @@ class MridangamDataset(Dataset):
                 noise = np.random.normal(0, noise_factor, audio.shape)
                 return audio + noise
         
-        except Exception as e:
+        except Exception:
             # If any augmentation fails, return original audio
             pass
         
@@ -193,7 +193,7 @@ class MridangamDataset(Dataset):
                     t_width = np.random.randint(1, t_mask_param + 1)
                     t_end = min(t_start + t_width, time_frames)
                     mel_spec[:, t_start:t_end] = mel_spec.min()
-            except Exception as e:
+            except Exception:
                 return mel_spec  # If time stretch fails, return original spectrogram
             
         elif aug_type_name == "noise_injection":
@@ -306,7 +306,6 @@ def compute_mel_statistics(file_paths: List[Path], sample_ratio: float = 0.1) ->
     n_sample = max(1, int(len(file_paths) * sample_ratio))
     sampled_paths = np.random.choice(file_paths, n_sample, replace=False)
     
-    all_mel_values = []  # List to collect mel values per frequency bin
     n_mels = 128  # From get_mel_spectrogram function
     
     # Initialize lists for each mel bin
@@ -428,7 +427,7 @@ def create_file_based_dataset(directory: Path,
     
     # Verify split proportions
     total_files = len(file_paths)
-    print(f"Split proportions:")
+    print("Split proportions:")
     print(f"  Train: {len(files_train)/total_files:.1%} ({len(files_train)} files)")
     print(f"  Validation: {len(files_val)/total_files:.1%} ({len(files_val)} files)")
     print(f"  Test: {len(files_test)/total_files:.1%} ({len(files_test)} files)")

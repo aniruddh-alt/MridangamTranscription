@@ -2,8 +2,6 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-import pickle
-import sys
 
 # Set up paths
 project_root = Path(__file__).parent
@@ -289,5 +287,5 @@ zipf.close()
 
 print("\nSetup complete!")
 print(f"Kaggle export files are in: {kaggle_export_dir}")
-print(f"Upload the ZIP file 'mridangam_transcription_kaggle.zip' to Kaggle as a dataset")
+print("Upload the ZIP file 'mridangam_transcription_kaggle.zip' to Kaggle as a dataset")
 print("Then, create a new notebook and use the provided kaggle_notebook.ipynb as a starting point")
