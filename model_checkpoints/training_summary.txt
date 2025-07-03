@@ -4,21 +4,21 @@ TRAINING SUMMARY
 
 Model Information:
 Architecture: CNN with Attentive Pooling
-Total Parameters: 250,123
-Trainable Parameters: 250,123
+Total Parameters: 418,604
+Trainable Parameters: 418,604
 
 Training Configuration:
 Batch Size: 32
 Learning Rate: 0.001
-Number of Epochs: 50
+Number of Epochs: 64
 Device: cuda
 
 Final Results:
-Final Train Loss: 0.7157
-Final Val Loss: 0.4867
-Final Train Accuracy: 76.84%
-Final Val Accuracy: 86.11%
+Final Train Loss: 0.4702
+Final Val Loss: 0.3704
+Final Train Accuracy: 86.45%
+Final Val Accuracy: 91.00%
 
 Best Performance:
-Best Val Loss: 0.4866
-Best Epoch: 48
+Best Val Loss: 0.3646
+Best Epoch: 49
