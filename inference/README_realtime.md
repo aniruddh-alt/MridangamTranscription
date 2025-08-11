@@ -47,6 +47,8 @@ python example_realtime_usage.py
 - `--confidence`, `-c`: Confidence threshold 0.0-1.0 (default: 0.5)
 - `--duration`, `-d`: Detection duration in seconds (optional)
 - `--classes`: Comma-separated list of class names (optional)
+- `--classes-file`: Path to JSON or newline-separated file with class names (optional). If provided, overrides checkpoint classes.
+- `--wav`: Run offline inference on a WAV file instead of microphone (optional). Useful for testing your real mridangam audio.
 
 ## Architecture
 

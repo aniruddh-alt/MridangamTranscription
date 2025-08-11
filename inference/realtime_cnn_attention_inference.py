@@ -35,6 +35,7 @@ from typing import Optional, Generator, Tuple, Dict, List
 import warnings
 from collections import deque
 import sys
+import json
 
 # Optional matplotlib import
 try:
@@ -359,7 +360,8 @@ class RealTimeStrokeDetector:
     """Real-time mridangam stroke detection with CNN Attention model"""
     
     def __init__(self, model_path: str, mel_stats_path: Optional[str] = None, 
-                 class_names: Optional[List[str]] = None, confidence_threshold: float = 0.5):
+                 class_names: Optional[List[str]] = None, confidence_threshold: float = 0.5,
+                 classes_file: Optional[str] = None):
         
         # Setup device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -372,12 +374,10 @@ class RealTimeStrokeDetector:
         # Load mel statistics for normalization
         self.mel_stats = self._load_mel_stats(mel_stats_path)
         
-        # Class names
-        if class_names is None:
-            # Default mridangam stroke names
-            self.class_names = ['Ta', 'Tha', 'Dha', 'Na', 'Thi', 'Ki', 'Dhi', 'Tam', 'Dhom', 'Kita']
-        else:
-            self.class_names = class_names
+        # Resolve class names
+        self.class_names = self._resolve_class_names(model_path=model_path,
+                                                    user_class_names=class_names,
+                                                    classes_file=classes_file)
             
         self.confidence_threshold = confidence_threshold
         self.last_detection_time = 0
@@ -443,6 +443,90 @@ class RealTimeStrokeDetector:
         except Exception as e:
             print(f"❌ Error loading model: {e}")
             raise
+
+    def _load_classes_from_checkpoint(self, model_path: str) -> Optional[List[str]]:
+        """Try to load class names from a checkpoint that includes metadata."""
+        try:
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+            if isinstance(checkpoint, dict):
+                # Direct key
+                if 'classes' in checkpoint and isinstance(checkpoint['classes'], (list, tuple)):
+                    return list(checkpoint['classes'])
+                # Embedded label encoder
+                if 'label_encoder' in checkpoint:
+                    le = checkpoint['label_encoder']
+                    # Some checkpoints save sklearn LabelEncoder; try to access classes_
+                    classes = getattr(le, 'classes_', None)
+                    if classes is not None:
+                        return list(classes)
+        except Exception:
+            pass
+        return None
+
+    def _load_classes_from_file(self, classes_file: Optional[str]) -> Optional[List[str]]:
+        """Load class names from a JSON array or newline-separated text file."""
+        if not classes_file:
+            return None
+        try:
+            with open(classes_file, 'r') as f:
+                content = f.read().strip()
+            # Try JSON first
+            try:
+                data = json.loads(content)
+                if isinstance(data, list) and all(isinstance(x, str) for x in data):
+                    return data
+            except json.JSONDecodeError:
+                # Fallback: newline-separated
+                lines = [line.strip() for line in content.splitlines() if line.strip()]
+                if lines:
+                    return lines
+        except Exception as e:
+            print(f"⚠️ Could not load classes from file '{classes_file}': {e}")
+        return None
+
+    def _resolve_class_names(self, model_path: str,
+                              user_class_names: Optional[List[str]],
+                              classes_file: Optional[str]) -> List[str]:
+        """Resolve class names in priority: user > file > checkpoint > default/generic.
+
+        Ensures length matches model output classes.
+        """
+        # Determine num_classes from model
+        num_classes = 10
+        try:
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+            state_dict = checkpoint.get('model_state_dict', checkpoint) if isinstance(checkpoint, dict) else checkpoint
+            for key, tensor in state_dict.items():
+                if isinstance(tensor, torch.Tensor) and key.endswith('classifier.5.weight'):
+                    num_classes = tensor.shape[0]
+                    break
+        except Exception:
+            pass
+
+        # 1) Explicit user-provided list
+        if user_class_names:
+            names = list(user_class_names)
+        else:
+            # 2) From classes file
+            names = self._load_classes_from_file(classes_file)
+            if names is None:
+                # 3) From checkpoint metadata
+                names = self._load_classes_from_checkpoint(model_path)
+
+        # 4) Fallbacks
+        if not names:
+            # Historically used names (may not match training). Prefer generic if mismatch.
+            default_names = ['Ta', 'Tha', 'Dha', 'Na', 'Thi', 'Ki', 'Dhi', 'Tam', 'Dhom', 'Kita']
+            names = default_names[:num_classes]
+            if len(names) != num_classes:
+                names = [f'class_{i}' for i in range(num_classes)]
+
+        # If length mismatch, fix deterministically
+        if len(names) != num_classes:
+            print(f"⚠️ Classes length ({len(names)}) doesn't match model outputs ({num_classes}). Using generic names.")
+            names = [f'class_{i}' for i in range(num_classes)]
+
+        return names
     
     def _load_mel_stats(self, mel_stats_path: Optional[str]) -> Optional[Dict[str, np.ndarray]]:
         """Load mel spectrogram normalization statistics"""
@@ -458,20 +542,30 @@ class RealTimeStrokeDetector:
         print("⚠️ Warning: No mel statistics loaded. Using default normalization.")
         return None
     
-    def _preprocess_audio(self, audio: np.ndarray, sr: float) -> torch.Tensor:
-        """Preprocess audio using the same pipeline as training"""
+    def _preprocess_audio(self, audio: np.ndarray, sr: float, pre_windowed: bool = False) -> torch.Tensor:
+        """Preprocess audio using the same pipeline as training.
+
+        If pre_windowed is True, assumes `audio` is already a 0.2s window around an onset,
+        and skips onset/window extraction.
+        """
         try:
             # Try to use imported functions, fallback to local implementations
             try:
                 from dataset.data_processing.data_preparation import get_onset, get_window, get_mel_spectrogram
-                onset = get_onset(audio, sr)
-                audio_window = get_window(onset, audio, sr)
-                mel_spec = get_mel_spectrogram(audio_window, sr)
+                if pre_windowed:
+                    mel_spec = get_mel_spectrogram(audio, sr)
+                else:
+                    onset = get_onset(audio, sr)
+                    audio_window = get_window(onset, audio, sr)
+                    mel_spec = get_mel_spectrogram(audio_window, sr)
             except (ImportError, NameError):
                 # Fall back to local implementations
-                onset = get_onset_local(audio, sr)
-                audio_window = get_window_local(onset, audio, sr)
-                mel_spec = get_mel_spectrogram_local(audio_window, sr)
+                if pre_windowed:
+                    mel_spec = get_mel_spectrogram_local(audio, sr)
+                else:
+                    onset = get_onset_local(audio, sr)
+                    audio_window = get_window_local(onset, audio, sr)
+                    mel_spec = get_mel_spectrogram_local(audio_window, sr)
             
             # Normalize and format
             mel_tensor = self._normalize_and_format(mel_spec)
@@ -482,6 +576,17 @@ class RealTimeStrokeDetector:
             print(f"❌ Preprocessing error: {e}")
             # Return zero tensor as fallback
             return torch.zeros(1, 1, 128, 128).to(self.device)
+
+    @staticmethod
+    def _validate_segment(audio_segment: np.ndarray, sr: float) -> bool:
+        """Basic energy/duration validation to reduce false positives."""
+        if audio_segment is None or len(audio_segment) < int(0.05 * sr):
+            return False
+        rms = float(np.sqrt(np.mean(np.square(audio_segment)))) if len(audio_segment) > 0 else 0.0
+        peak = float(np.max(np.abs(audio_segment))) if len(audio_segment) > 0 else 0.0
+        if rms < 0.01 or peak < 0.05:
+            return False
+        return True
     
     def _normalize_and_format(self, mel_spec: np.ndarray, target_length: int = 128) -> torch.Tensor:
         """Normalize per mel-bin and format for CNN architecture"""
@@ -504,11 +609,14 @@ class RealTimeStrokeDetector:
         
         return mel_tensor.to(self.device)
     
-    def predict_stroke(self, audio_segment: np.ndarray, sr: float = 22050) -> Tuple[str, float, np.ndarray]:
+    def predict_stroke(self, audio_segment: np.ndarray, sr: float = 22050, pre_windowed: bool = False) -> Tuple[str, float, np.ndarray]:
         """Predict mridangam stroke from audio segment"""
         try:
+            # Validate segment
+            if not self._validate_segment(audio_segment, sr):
+                return "Weak_Signal", 0.0, np.zeros(len(self.class_names))
             # Preprocess audio
-            mel_tensor = self._preprocess_audio(audio_segment, sr)
+            mel_tensor = self._preprocess_audio(audio_segment, sr, pre_windowed=pre_windowed)
             
             # Model inference
             with torch.no_grad():
@@ -544,7 +652,7 @@ class RealTimeStrokeDetector:
                 if duration and (time.time() - start_time) > duration:
                     break
                 
-                # Get recent audio for onset detection
+                # Get recent audio for onset detection (1.0s buffer)
                 recent_audio = self.audio_processor.get_recent_audio(duration=1.0)
                 
                 if len(recent_audio) > 0:
@@ -561,14 +669,13 @@ class RealTimeStrokeDetector:
                         if absolute_onset_time - last_onset_time > self.min_detection_interval:
                             last_onset_time = absolute_onset_time
                             
-                            # Get audio segment around onset for classification
-                            segment_duration = 0.5  # 500ms around onset
-                            segment_audio = self.audio_processor.get_recent_audio(duration=segment_duration)
+                            # Extract exact window around the detected onset from the recent buffer
+                            segment_audio = get_window_local(onset, recent_audio, self.audio_processor.sample_rate)
                             
                             if len(segment_audio) > 0:
-                                # Predict stroke
+                                # Predict stroke from the windowed segment
                                 predicted_class, confidence, all_probs = self.predict_stroke(
-                                    segment_audio, self.audio_processor.sample_rate
+                                    segment_audio, self.audio_processor.sample_rate, pre_windowed=True
                                 )
                                 
                                 # Check confidence threshold
@@ -586,7 +693,8 @@ class RealTimeStrokeDetector:
 def run_realtime_detection(model_path: str, mel_stats_path: Optional[str] = None, 
                           class_names: Optional[List[str]] = None,
                           confidence_threshold: float = 0.5,
-                          duration: Optional[float] = None):
+                          duration: Optional[float] = None,
+                          classes_file: Optional[str] = None):
     """Run real-time detection with the specified parameters"""
     try:
         # Create detector
@@ -594,7 +702,8 @@ def run_realtime_detection(model_path: str, mel_stats_path: Optional[str] = None
             model_path=model_path,
             mel_stats_path=mel_stats_path,
             class_names=class_names,
-            confidence_threshold=confidence_threshold
+            confidence_threshold=confidence_threshold,
+            classes_file=classes_file
         )
         
         # Detection statistics
@@ -641,6 +750,70 @@ def run_realtime_detection(model_path: str, mel_stats_path: Optional[str] = None
         import traceback
         traceback.print_exc()
 
+def run_file_inference(wav_path: str, model_path: str, mel_stats_path: Optional[str] = None,
+                       class_names: Optional[List[str]] = None, classes_file: Optional[str] = None,
+                       confidence_threshold: float = 0.5) -> Dict[str, any]:
+    """Offline evaluation on a WAV file with training-aligned preprocessing."""
+    # Create detector without starting mic
+    detector = RealTimeStrokeDetector(
+        model_path=model_path,
+        mel_stats_path=mel_stats_path,
+        class_names=class_names,
+        confidence_threshold=confidence_threshold,
+        classes_file=classes_file
+    )
+    # Load audio
+    try:
+        y, sr = librosa.load(wav_path, sr=22050)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load audio '{wav_path}': {e}")
+
+    # Find onsets using training-like approach
+    try:
+        # Use multiple onsets across whole file
+        onsets = librosa.onset.onset_detect(
+            y=y, sr=sr, units='time',
+            onset_envelope=librosa.onset.onset_strength(y=y, sr=sr),
+            pre_max=3, post_max=3, pre_avg=3, post_avg=3,
+            delta=0.3, wait=5
+        )
+    except Exception:
+        onsets = librosa.onset.onset_detect(y=y, sr=sr, units='time')
+
+    results = []
+    for onset in onsets:
+        try:
+            try:
+                from dataset.data_processing.data_preparation import get_window
+                segment = get_window(onset, y, sr)
+            except Exception:
+                segment = get_window_local(onset, y, sr)
+            pred_class, conf, probs = detector.predict_stroke(segment, sr, pre_windowed=True)
+            results.append((onset, pred_class, conf, probs))
+        except Exception as e:
+            print(f"Segment error at onset {onset:.3f}: {e}")
+
+    # Summary
+    summary = {}
+    for _, cls, conf, _ in results:
+        if conf >= confidence_threshold:
+            summary[cls] = summary.get(cls, 0) + 1
+
+    print("\n" + "=" * 60)
+    print(f"Offline file inference: {os.path.basename(wav_path)}")
+    print("=" * 60)
+    for onset, cls, conf, _ in results:
+        print(f"  {onset:6.3f}s -> {cls:>6} (conf: {conf:.3f})")
+    print("\nHigh-confidence summary (>= {0:.2f}):".format(confidence_threshold))
+    for k, v in sorted(summary.items(), key=lambda x: x[1], reverse=True):
+        print(f"  {k:>6}: {v}")
+
+    return {
+        'results': results,
+        'summary': summary,
+        'classes': detector.class_names
+    }
+
 def main():
     """Main function with command line interface"""
     import argparse
@@ -651,6 +824,8 @@ def main():
     parser.add_argument("--confidence", "-c", type=float, default=0.5, help="Confidence threshold (0.0-1.0)")
     parser.add_argument("--duration", "-d", type=float, help="Detection duration in seconds")
     parser.add_argument("--classes", help="Comma-separated list of class names")
+    parser.add_argument("--classes-file", help="Path to a JSON or newline-separated file with class names")
+    parser.add_argument("--wav", help="Run offline inference on a WAV file instead of microphone")
     
     args = parser.parse_args()
     
@@ -659,14 +834,25 @@ def main():
     if args.classes:
         class_names = [name.strip() for name in args.classes.split(',')]
     
-    # Run detection
-    run_realtime_detection(
-        model_path=args.model,
-        mel_stats_path=args.mel_stats,
-        class_names=class_names,
-        confidence_threshold=args.confidence,
-        duration=args.duration
-    )
+    # Run offline or realtime
+    if args.wav:
+        run_file_inference(
+            wav_path=args.wav,
+            model_path=args.model,
+            mel_stats_path=args.mel_stats,
+            class_names=class_names,
+            classes_file=args.classes_file,
+            confidence_threshold=args.confidence
+        )
+    else:
+        run_realtime_detection(
+            model_path=args.model,
+            mel_stats_path=args.mel_stats,
+            class_names=class_names,
+            confidence_threshold=args.confidence,
+            duration=args.duration,
+            classes_file=args.classes_file
+        )
 
 if __name__ == "__main__":
     main() 
