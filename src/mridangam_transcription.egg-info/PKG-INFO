@@ -1,3 +1,19 @@
+Metadata-Version: 2.4
+Name: mridangam-transcription
+Version: 0.1.0
+Summary: Automatic transcription of mridangam strokes using deep learning
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch
+Requires-Dist: torchaudio
+Requires-Dist: librosa
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: scikit-learn
+Requires-Dist: matplotlib
+Requires-Dist: tqdm
+Requires-Dist: pyaudio
+
 # Mridangam Transcription Project
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
