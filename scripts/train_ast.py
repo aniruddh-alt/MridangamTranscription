@@ -71,15 +71,12 @@ def train(args):
         weight_decay=1e-4
     )
     
-    # Cosine scheduler with warmup
-    total_steps = len(train_loader) * args.epochs
-    warmup_steps = int(0.1 * total_steps)
+    # Cosine scheduler with warmup - Phase 1 only
+    phase1_steps = len(train_loader) * args.freeze_epochs
+    current_warmup_steps = int(0.1 * phase1_steps)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_steps - warmup_steps
+        optimizer, T_max=phase1_steps - current_warmup_steps
     )
-    
-    # Track warmup steps for current phase
-    current_warmup_steps = warmup_steps
     
     # Mixed precision training for CUDA
     use_amp = device.type == 'cuda'
