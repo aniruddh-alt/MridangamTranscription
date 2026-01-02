@@ -13,7 +13,9 @@ from collections import deque
 from typing import Optional, List, Dict
 
 from mridangam_transcription.models.cnn_attention import MridangamCNN
-from mridangam_transcription.audio.preprocess import get_onset, get_window, get_mel_spectrogram
+from mridangam_transcription.models.ast_classifier import ASTMridangamClassifier
+from mridangam_transcription.audio.preprocess import get_onset, get_window, get_mel_spectrogram, get_audio_16k
+from transformers import ASTFeatureExtractor
 
 class RealTimeTranscriber:
     def __init__(self, model_path: str, device: str = 'auto', 
@@ -25,12 +27,29 @@ class RealTimeTranscriber:
         # Load checkpoint
         checkpoint = torch.load(model_path, map_location=self.device)
         self.classes = checkpoint['classes']
-        self.mel_stats = checkpoint['mel_stats']
         
-        # Initialize model
-        self.model = MridangamCNN(num_classes=len(self.classes)).to(self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.model.eval()
+        # Detect model type (AST or CNN)
+        self.is_ast_model = checkpoint.get('model_type') == 'AST' or checkpoint.get('mel_stats') is None
+        
+        if self.is_ast_model:
+            print("Loading AST model...")
+            # Initialize AST model
+            self.model = ASTMridangamClassifier(num_classes=len(self.classes)).to(self.device)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.eval()
+            
+            # Initialize AST feature extractor
+            self.feature_extractor = ASTFeatureExtractor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
+            self.sample_rate = 16000  # AST expects 16kHz
+        else:
+            print("Loading CNN model...")
+            # Initialize CNN model
+            self.mel_stats = checkpoint['mel_stats']
+            self.model = MridangamCNN(num_classes=len(self.classes)).to(self.device)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.eval()
+            self.feature_extractor = None
+            self.sample_rate = 22050  # CNN uses 22.05kHz
         
         self.confidence_threshold = confidence_threshold
         
@@ -40,7 +59,6 @@ class RealTimeTranscriber:
             with open(mapping_path, 'r') as f:
                 self.mapping = json.load(f)
                 
-        self.sample_rate = 22050
         self.buffer_duration = 2.0
         self.buffer_size = int(self.sample_rate * self.buffer_duration)
         self.audio_buffer = deque(maxlen=self.buffer_size)
@@ -55,29 +73,48 @@ class RealTimeTranscriber:
         rms = np.sqrt(np.mean(audio_segment**2))
         if rms < 0.01:
             return None
+        
+        if self.is_ast_model:
+            # AST preprocessing
+            # Ensure audio is at correct sample rate
+            if len(audio_segment) == 0:
+                return None
             
-        # Preprocess
-        mel_spec = get_mel_spectrogram(audio_segment, self.sample_rate)
-        
-        # Normalization
-        mean = np.array(self.mel_stats['mean'])
-        std = np.array(self.mel_stats['std'])
-        mel_spec = (mel_spec - mean[:, np.newaxis]) / (std[:, np.newaxis] + 1e-8)
-        
-        # Tensor formatting
-        mel_tensor = torch.FloatTensor(mel_spec).unsqueeze(0).unsqueeze(0).to(self.device)
-        
-        # Fixed length padding
-        target_len = 128
-        if mel_tensor.shape[3] < target_len:
-            mel_tensor = F.pad(mel_tensor, (0, target_len - mel_tensor.shape[3]))
+            # Use AST feature extractor
+            inputs = self.feature_extractor(
+                audio_segment,
+                sampling_rate=self.sample_rate,
+                return_tensors="pt"
+            )
+            input_values = inputs["input_values"].to(self.device)
+            
+            with torch.no_grad():
+                outputs = self.model(input_values)
+                probs = F.softmax(outputs, dim=1)
+                confidence, idx = torch.max(probs, 1)
         else:
-            mel_tensor = mel_tensor[:, :, :, :target_len]
+            # CNN preprocessing
+            mel_spec = get_mel_spectrogram(audio_segment, self.sample_rate)
             
-        with torch.no_grad():
-            outputs = self.model(mel_tensor)
-            probs = F.softmax(outputs, dim=1)
-            confidence, idx = torch.max(probs, 1)
+            # Normalization
+            mean = np.array(self.mel_stats['mean'])
+            std = np.array(self.mel_stats['std'])
+            mel_spec = (mel_spec - mean[:, np.newaxis]) / (std[:, np.newaxis] + 1e-8)
+            
+            # Tensor formatting
+            mel_tensor = torch.FloatTensor(mel_spec).unsqueeze(0).unsqueeze(0).to(self.device)
+            
+            # Fixed length padding
+            target_len = 128
+            if mel_tensor.shape[3] < target_len:
+                mel_tensor = F.pad(mel_tensor, (0, target_len - mel_tensor.shape[3]))
+            else:
+                mel_tensor = mel_tensor[:, :, :, :target_len]
+                
+            with torch.no_grad():
+                outputs = self.model(mel_tensor)
+                probs = F.softmax(outputs, dim=1)
+                confidence, idx = torch.max(probs, 1)
             
         conf_val = confidence.item()
         if conf_val < self.confidence_threshold:
@@ -98,7 +135,10 @@ class RealTimeTranscriber:
     def process_wav(self, wav_path: str, output_mode: str = 'both'):
         """Process a WAV file offline."""
         print(f"Processing WAV: {wav_path}")
-        audio, sr = librosa.load(wav_path, sr=self.sample_rate)
+        if self.is_ast_model:
+            audio, sr = get_audio_16k(wav_path)
+        else:
+            audio, sr = librosa.load(wav_path, sr=self.sample_rate)
         
         # Simple onset detection on the whole file
         onsets = librosa.onset.onset_detect(y=audio, sr=sr, units='time', delta=0.3)

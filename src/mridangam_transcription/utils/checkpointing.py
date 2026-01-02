@@ -1,7 +1,7 @@
 import os
 import torch
 
-def save_checkpoint(model, optimizer, scheduler, epoch, classes, mel_stats, train_metrics, val_metrics, filepath):
+def save_checkpoint(model, optimizer, scheduler, epoch, classes, mel_stats, train_metrics, val_metrics, filepath, model_type=None):
     """Save training checkpoint with metadata."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     checkpoint = {
@@ -14,6 +14,8 @@ def save_checkpoint(model, optimizer, scheduler, epoch, classes, mel_stats, trai
         'train_metrics': train_metrics,
         'val_metrics': val_metrics
     }
+    if model_type is not None:
+        checkpoint['model_type'] = model_type
     torch.save(checkpoint, filepath)
 
 def load_checkpoint(model, filepath, device, optimizer=None, scheduler=None):

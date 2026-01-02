@@ -7,6 +7,11 @@ def get_audio(path: str, sr: int = 22050) -> Tuple[np.ndarray, float]:
     audio, loaded_sr = librosa.load(path, sr=sr)
     return audio, loaded_sr
 
+def get_audio_16k(path: str) -> Tuple[np.ndarray, float]:
+    """Load audio file at 16kHz for AST compatibility."""
+    audio, loaded_sr = librosa.load(path, sr=16000)
+    return audio, loaded_sr
+
 def get_onset(audio: np.ndarray, sr: float) -> Optional[float]:
     """Improved onset detection for mridangam percussion."""
     # Spectral flux
